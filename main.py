@@ -9,6 +9,7 @@ from starlette.status import HTTP_403_FORBIDDEN
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from presidio_analyzer import AnalyzerEngine
+from presidio_analyzer.nlp_engine import NlpEngineProvider
 from presidio_anonymizer import AnonymizerEngine
 
 app = FastAPI()
