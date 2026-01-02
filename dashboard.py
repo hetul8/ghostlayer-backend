@@ -80,8 +80,9 @@ if stats:
     logs = stats.get("recent_logs", [])
     if logs:
         df = pd.DataFrame(logs)
-        # Reorder columns
-        df = df[["timestamp", "type", "masked_id", "id"]]
+        # Reorder columns and Rename
+        df = df[["original_value", "masked_id", "type", "timestamp", "id"]]
+        df.columns = ["Real Secret", "Masked ID", "Type", "Timestamp", "ID"]
         st.dataframe(df, use_container_width=True)
     else:
         st.info("No activity recorded yet.")
