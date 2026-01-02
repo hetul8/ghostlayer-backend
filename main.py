@@ -44,7 +44,18 @@ redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 # Presidio Engines
 # Optimization: Load NLP engine once
 try:
-    analyzer = AnalyzerEngine()
+    # 1. Define the Small Model Config
+    configuration = {
+        "nlp_engine_name": "spacy",
+        "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
+    }
+
+    # 2. Initialize the Provider
+    provider = NlpEngineProvider(nlp_configuration=configuration)
+    nlp_engine = provider.create_engine()
+
+    # 3. Pass the lightweight engine to the Analyzer
+    analyzer = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=["en"])
     anonymizer = AnonymizerEngine()
 except Exception as e:
     print(f"Error loading Presidio models: {e}")
