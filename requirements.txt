@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+presidio-analyzer
+presidio-anonymizer
+spacy
+redis
+fakeredis
+requests
+streamlit
+pandas
+plotly
+faker
+gunicorn
