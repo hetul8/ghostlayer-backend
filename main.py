@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
 from starlette.status import HTTP_403_FORBIDDEN
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
