@@ -74,18 +74,17 @@ try:
     print("Database tables created/verified.")
     
     # Quick/Dirty Migration for MVP: Add columns if they strictly don't exist
-    # Note: In production, use Alembic. Here, we try to be helpful for the prototype.
     with engine.connect() as conn:
         try:
-            conn.execute(text("ALTER TABLE users ADD COLUMN is_premium BOOLEAN DEFAULT FALSE"))
-            print("Migrated: Added is_premium to users")
-        except: pass
-        
-        try:
-            conn.execute(text("ALTER TABLE secrets ADD COLUMN user_id INTEGER REFERENCES users(id)"))
-            print("Migrated: Added user_id to secrets")
-        except: pass
-        
+            # Explicit transaction for DDL
+            with conn.begin(): 
+                # PostgreSQL specific "IF NOT EXISTS"
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_premium BOOLEAN DEFAULT FALSE;"))
+                conn.execute(text("ALTER TABLE secrets ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id);"))
+                print("Migration: Columns ensured.")
+        except Exception as mig_err:
+            print(f"Migration Note (Normal if columns exist): {mig_err}")
+                
 except Exception as e:
     print(f"Error creating/migrating tables: {e}")
 
