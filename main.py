@@ -191,7 +191,7 @@ def unmask_text(request: UnmaskRequest, user: User = Depends(get_api_key), db: S
 def get_user_history(user: User = Depends(get_api_key), db: Session = Depends(get_db)):
     # Premium Gate
     if not user.is_premium:
-        return {"status": "forbidden", "message": "Upgrade to Premium to view history"}
+        raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Upgrade to Premium to view history")
     
     # Fetch History
     logs = db.query(Secret).filter(Secret.user_id == user.id).order_by(Secret.timestamp.desc()).limit(50).all()
