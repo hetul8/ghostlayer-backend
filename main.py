@@ -17,12 +17,31 @@ from sqlalchemy import create_engine, Column, String, DateTime, Text, Integer, B
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Auth Configuration
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-# MY_SECRET_KEY removed in favor of DB check
 
-# ... (db setup)
+# --- DATABASE SETUP (PostgreSQL) ---
+# Use environment variable if available, otherwise use provided default
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://ghostlayer_db_user:BKB9fMwl7newsw7to4Mk0mmXnbcbnFrD@dpg-d5c99n8gjchc73chfeqg-a/ghostlayer_db")
+
+# Fix for Render's postgres:// vs postgresql://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
 # Define Models
 class User(Base):
@@ -47,54 +66,6 @@ class Secret(Base):
     original_value = Column(Text)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
 
-# ... (create tables)
-
-# ... (get_db)
-
-# Security Dependency
-async def get_api_key(api_key_header: str = Security(api_key_header), db: Session = Depends(get_db)):
-    if not api_key_header:
-        raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="API Key missing")
-    
-    # Check DB
-    api_key_record = db.query(APIKey).filter(APIKey.key == api_key_header, APIKey.is_active == True).first()
-    
-    if api_key_record:
-        return api_key_record.user # Return the User object!
-    else:
-        # Fallback for the hardcoded dashboard key during migration?
-        # User said "Remove the hardcoded API_KEY check".
-        # But if I remove it, the currently deployed dashboard (using "ghost_123_secret") will break until I create a user for it.
-        # I will assume I should add a check *or* I should just follow instructions strictly.
-        # "Remove the hardcoded API_KEY check" -> Strict.
-        raise HTTPException(
-            status_code=HTTP_403_FORBIDDEN, detail="Invalid or inactive API Key"
-        )
-
-# Admin Tools
-class CreateUserRequest(BaseModel):
-    email: str
-
-@app.post("/admin/create_user")
-def create_user(request: CreateUserRequest, db: Session = Depends(get_db)):
-    # Check if exists
-    if db.query(User).filter(User.email == request.email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Create User
-    new_user = User(email=request.email)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    # Generate Key
-    new_key = "gk_live_" + secrets.token_urlsafe(16)
-    db_key = APIKey(key=new_key, user_id=new_user.id)
-    db.add(db_key)
-    db.commit()
-    
-    return {"email": new_user.email, "api_key": new_key}
-
 # Create Tables
 try:
     Base.metadata.create_all(bind=engine)
@@ -109,6 +80,21 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# Security Dependency
+async def get_api_key(api_key_header: str = Security(api_key_header), db: Session = Depends(get_db)):
+    if not api_key_header:
+        raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="API Key missing")
+    
+    # Check DB
+    api_key_record = db.query(APIKey).filter(APIKey.key == api_key_header, APIKey.is_active == True).first()
+    
+    if api_key_record:
+        return api_key_record.user
+    else:
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN, detail="Invalid or inactive API Key"
+        )
 
 # --- PRESIDIO SETUP ---
 try:
@@ -178,7 +164,6 @@ def unmask_text(request: UnmaskRequest, api_key: str = Depends(get_api_key), db:
     
     def replace_match(match):
         full_placeholder = match.group(0)
-        # Query DB
         secret = db.query(Secret).filter(Secret.masked_id == full_placeholder).first()
         if secret:
             return secret.original_value
@@ -195,7 +180,6 @@ def get_stats(api_key: str = Depends(get_api_key), db: Session = Depends(get_db)
         emails = db.query(Secret).filter(Secret.type == 'EMAIL_ADDRESS').count()
         phones = db.query(Secret).filter(Secret.type == 'PHONE_NUMBER').count()
         
-        # Recent Logs (Secure: No PII)
         logs = db.query(Secret).order_by(Secret.timestamp.desc()).limit(100).all()
         
         recent_logs = []
@@ -204,7 +188,7 @@ def get_stats(api_key: str = Depends(get_api_key), db: Session = Depends(get_db)
                 "id": log.id,
                 "type": log.type,
                 "masked_id": log.masked_id,
-                "original_value": log.original_value, # Admin View Enabled
+                "original_value": log.original_value,
                 "timestamp": log.timestamp.isoformat()
             })
         
@@ -217,3 +201,24 @@ def get_stats(api_key: str = Depends(get_api_key), db: Session = Depends(get_db)
     except Exception as e:
         print(f"Stats Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Admin Tools
+class CreateUserRequest(BaseModel):
+    email: str
+
+@app.post("/admin/create_user")
+def create_user(request: CreateUserRequest, db: Session = Depends(get_db)):
+    if db.query(User).filter(User.email == request.email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    new_user = User(email=request.email)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    new_key = "gk_live_" + secrets.token_urlsafe(16)
+    db_key = APIKey(key=new_key, user_id=new_user.id)
+    db.add(db_key)
+    db.commit()
+    
+    return {"email": new_user.email, "api_key": new_key}
