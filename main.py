@@ -13,7 +13,7 @@ from presidio_analyzer.nlp_engine import NlpEngineProvider
 from presidio_anonymizer import AnonymizerEngine
 
 # SQLAlchemy Imports
-from sqlalchemy import create_engine, Column, String, DateTime, Text, Integer, Boolean, ForeignKey
+from sqlalchemy import create_engine, Column, String, DateTime, Text, Integer, Boolean, ForeignKey, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
@@ -32,10 +32,8 @@ API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 # --- DATABASE SETUP (PostgreSQL) ---
-# Use environment variable if available, otherwise use provided default
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://ghostlayer_db_user:BKB9fMwl7newsw7to4Mk0mmXnbcbnFrD@dpg-d5c99n8gjchc73chfeqg-a/ghostlayer_db")
 
-# Fix for Render's postgres:// vs postgresql://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -48,8 +46,10 @@ class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
+    is_premium = Column(Boolean, default=False) # New Column
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     api_keys = relationship("APIKey", back_populates="user")
+    secrets = relationship("Secret", back_populates="user") # New Relationship
 
 class APIKey(Base):
     __tablename__ = "api_keys"
@@ -65,13 +65,29 @@ class Secret(Base):
     masked_id = Column(String, index=True)
     original_value = Column(Text)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True) # New Column
+    user = relationship("User", back_populates="secrets") # New Relationship
 
-# Create Tables
+# Create Tables (and attempt simple migrations for MVP)
 try:
     Base.metadata.create_all(bind=engine)
     print("Database tables created/verified.")
+    
+    # Quick/Dirty Migration for MVP: Add columns if they strictly don't exist
+    # Note: In production, use Alembic. Here, we try to be helpful for the prototype.
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE users ADD COLUMN is_premium BOOLEAN DEFAULT FALSE"))
+            print("Migrated: Added is_premium to users")
+        except: pass
+        
+        try:
+            conn.execute(text("ALTER TABLE secrets ADD COLUMN user_id INTEGER REFERENCES users(id)"))
+            print("Migrated: Added user_id to secrets")
+        except: pass
+        
 except Exception as e:
-    print(f"Error creating tables: {e}")
+    print(f"Error creating/migrating tables: {e}")
 
 # Dependency
 def get_db():
@@ -86,15 +102,12 @@ async def get_api_key(api_key_header: str = Security(api_key_header), db: Sessio
     if not api_key_header:
         raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="API Key missing")
     
-    # Check DB
     api_key_record = db.query(APIKey).filter(APIKey.key == api_key_header, APIKey.is_active == True).first()
     
     if api_key_record:
         return api_key_record.user
     else:
-        raise HTTPException(
-            status_code=HTTP_403_FORBIDDEN, detail="Invalid or inactive API Key"
-        )
+        raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Invalid or inactive API Key")
 
 # --- PRESIDIO SETUP ---
 try:
@@ -118,7 +131,7 @@ class UnmaskRequest(BaseModel):
     masked_text: str
 
 @app.post("/mask")
-def mask_text(request: MaskRequest, api_key: str = Depends(get_api_key), db: Session = Depends(get_db)):
+def mask_text(request: MaskRequest, user: User = Depends(get_api_key), db: Session = Depends(get_db)):
     if not analyzer or not anonymizer:
         raise HTTPException(status_code=500, detail="Presidio analyzer not initialized")
     
@@ -137,12 +150,13 @@ def mask_text(request: MaskRequest, api_key: str = Depends(get_api_key), db: Ses
             short_id = unique_uuid[:8]
             placeholder = f"[{entity_type}_{short_id}]"
             
-            # Create DB Record
+            # Create DB Record with User Connection
             db_secret = Secret(
                 id=unique_uuid,
                 type=entity_type,
                 masked_id=placeholder,
-                original_value=original_value
+                original_value=original_value,
+                user_id=user.id # Link to Authenticated User
             )
             db.add(db_secret)
             
@@ -157,7 +171,7 @@ def mask_text(request: MaskRequest, api_key: str = Depends(get_api_key), db: Ses
     return {"masked_text": masked_text}
 
 @app.post("/unmask")
-def unmask_text(request: UnmaskRequest, api_key: str = Depends(get_api_key), db: Session = Depends(get_db)):
+def unmask_text(request: UnmaskRequest, user: User = Depends(get_api_key), db: Session = Depends(get_db)):
     masked_text = request.masked_text
     import re
     pattern = r"\[([A-Z_]+)_([a-f0-9]+)\]"
@@ -173,8 +187,29 @@ def unmask_text(request: UnmaskRequest, api_key: str = Depends(get_api_key), db:
     unmasked_text = re.sub(pattern, replace_match, masked_text)
     return {"original_text": unmasked_text}
 
+@app.get("/user/history")
+def get_user_history(user: User = Depends(get_api_key), db: Session = Depends(get_db)):
+    # Premium Gate
+    if not user.is_premium:
+        return {"status": "forbidden", "message": "Upgrade to Premium to view history"}
+    
+    # Fetch History
+    logs = db.query(Secret).filter(Secret.user_id == user.id).order_by(Secret.timestamp.desc()).limit(50).all()
+    
+    history = []
+    for log in logs:
+        history.append({
+            "original_value": log.original_value,
+            "masked_id": log.masked_id,
+            "timestamp": log.timestamp.isoformat(),
+            "type": log.type
+        })
+        
+    return history
+
 @app.get("/stats")
-def get_stats(api_key: str = Depends(get_api_key), db: Session = Depends(get_db)):
+def get_stats(user: User = Depends(get_api_key), db: Session = Depends(get_db)):
+    # Admin only? Or anyone? For now logic remains same, but user is authenticated.
     try:
         total = db.query(Secret).count()
         emails = db.query(Secret).filter(Secret.type == 'EMAIL_ADDRESS').count()
@@ -202,7 +237,6 @@ def get_stats(api_key: str = Depends(get_api_key), db: Session = Depends(get_db)
         print(f"Stats Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Admin Tools
 class CreateUserRequest(BaseModel):
     email: str
 
