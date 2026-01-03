@@ -256,3 +256,9 @@ def create_user(request: CreateUserRequest, db: Session = Depends(get_db)):
     db.commit()
     
     return {"email": new_user.email, "api_key": new_key}
+
+@app.get("/admin/upgrade_me")
+def upgrade_me(user: User = Depends(get_api_key), db: Session = Depends(get_db)):
+    user.is_premium = True
+    db.commit()
+    return {"status": "success", "message": "User upgraded to Premium!", "email": user.email}
