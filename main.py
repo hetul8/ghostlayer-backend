@@ -173,8 +173,8 @@ def get_stats(api_key: str = Depends(get_api_key)):
         cursor.execute("SELECT COUNT(*) FROM secrets WHERE type = 'PHONE_NUMBER'")
         phones = cursor.fetchone()[0]
         
-        # Recent Logs (Secure: Now including PII for Admin)
-        cursor.execute("SELECT id, type, masked_id, original_value, timestamp FROM secrets ORDER BY timestamp DESC LIMIT 100")
+        # Recent Logs (Secure: No PII)
+        cursor.execute("SELECT id, type, masked_id, timestamp FROM secrets ORDER BY timestamp DESC LIMIT 100")
         rows = cursor.fetchall()
         recent_logs = [dict(row) for row in rows]
         
