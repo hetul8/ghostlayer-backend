@@ -53,15 +53,21 @@ try:
         if logs:
             df = pd.DataFrame(logs)
             # Safe columns only
-            # API returns: id, type, masked_id, timestamp
-            desired_order = ["masked_id", "type", "timestamp", "id"]
+            # API returns: id, type, masked_id, timestamp, original_value
+            desired_order = ["original_value", "masked_id", "type", "timestamp", "id"]
             
             # Filter and Rename
             cols_to_show = [c for c in desired_order if c in df.columns]
             df = df[cols_to_show]
             
             # Rename for display
-            rename_map = {"masked_id": "Masked ID", "type": "Type", "timestamp": "Timestamp", "id": "UUID"}
+            rename_map = {
+                "original_value": "Real Secret",
+                "masked_id": "Masked ID", 
+                "type": "Type", 
+                "timestamp": "Timestamp", 
+                "id": "UUID"
+            }
             df = df.rename(columns=rename_map)
             
             st.dataframe(df, use_container_width=True)

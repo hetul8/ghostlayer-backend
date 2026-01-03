@@ -170,7 +170,7 @@ def get_stats(api_key: str = Depends(get_api_key), db: Session = Depends(get_db)
                 "id": log.id,
                 "type": log.type,
                 "masked_id": log.masked_id,
-                # "original_value": log.original_value, # REDACTED for Security
+                "original_value": log.original_value, # Admin View Enabled
                 "timestamp": log.timestamp.isoformat()
             })
         
