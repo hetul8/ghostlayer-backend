@@ -1,65 +1,90 @@
-import os
-import uuid
-import datetime
-from typing import Optional, List
-from fastapi import FastAPI, HTTPException, Security, Depends
-from fastapi.security.api_key import APIKeyHeader
-from starlette.status import HTTP_403_FORBIDDEN
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from presidio_analyzer import AnalyzerEngine
-from presidio_analyzer.nlp_engine import NlpEngineProvider
-from presidio_anonymizer import AnonymizerEngine
-
-# SQLAlchemy Imports
-from sqlalchemy import create_engine, Column, String, DateTime, Text
+import secrets
+# ... (existing imports)
+from sqlalchemy import create_engine, Column, String, DateTime, Text, Integer, Boolean, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, relationship
 
-app = FastAPI()
+# ... (app init)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ... (middleware)
 
 # Auth Configuration
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-MY_SECRET_KEY = os.getenv("MY_SECRET_KEY", "dev-secret-key")
+# MY_SECRET_KEY removed in favor of DB check
 
-async def get_api_key(api_key_header: str = Security(api_key_header)):
-    if api_key_header == MY_SECRET_KEY:
-        return api_key_header
-    else:
-        raise HTTPException(
-            status_code=HTTP_403_FORBIDDEN, detail="Could not validate credentials"
-        )
+# ... (db setup)
 
-# --- DATABASE SETUP (PostgreSQL) ---
-# Use environment variable if available, otherwise use provided default
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://ghostlayer_db_user:BKB9fMwl7newsw7to4Mk0mmXnbcbnFrD@dpg-d5c99n8gjchc73chfeqg-a/ghostlayer_db")
+# Define Models
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    api_keys = relationship("APIKey", back_populates="user")
 
-# Fix for Render's postgres:// vs postgresql://
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+class APIKey(Base):
+    __tablename__ = "api_keys"
+    key = Column(String, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    is_active = Column(Boolean, default=True)
+    user = relationship("User", back_populates="api_keys")
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-# Define Model
 class Secret(Base):
     __tablename__ = "secrets"
-
     id = Column(String, primary_key=True, index=True)
     type = Column(String)
     masked_id = Column(String, index=True)
-    original_value = Column(Text) # Encrypted? Ideally yes, but for MVP plain text as requested.
+    original_value = Column(Text)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+
+# ... (create tables)
+
+# ... (get_db)
+
+# Security Dependency
+async def get_api_key(api_key_header: str = Security(api_key_header), db: Session = Depends(get_db)):
+    if not api_key_header:
+        raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="API Key missing")
+    
+    # Check DB
+    api_key_record = db.query(APIKey).filter(APIKey.key == api_key_header, APIKey.is_active == True).first()
+    
+    if api_key_record:
+        return api_key_record.user # Return the User object!
+    else:
+        # Fallback for the hardcoded dashboard key during migration?
+        # User said "Remove the hardcoded API_KEY check".
+        # But if I remove it, the currently deployed dashboard (using "ghost_123_secret") will break until I create a user for it.
+        # I will assume I should add a check *or* I should just follow instructions strictly.
+        # "Remove the hardcoded API_KEY check" -> Strict.
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN, detail="Invalid or inactive API Key"
+        )
+
+# Admin Tools
+class CreateUserRequest(BaseModel):
+    email: str
+
+@app.post("/admin/create_user")
+def create_user(request: CreateUserRequest, db: Session = Depends(get_db)):
+    # Check if exists
+    if db.query(User).filter(User.email == request.email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create User
+    new_user = User(email=request.email)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    # Generate Key
+    new_key = "gk_live_" + secrets.token_urlsafe(16)
+    db_key = APIKey(key=new_key, user_id=new_user.id)
+    db.add(db_key)
+    db.commit()
+    
+    return {"email": new_user.email, "api_key": new_key}
 
 # Create Tables
 try:
